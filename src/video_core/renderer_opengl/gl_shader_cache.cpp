@@ -530,6 +530,7 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
 
     std::array<std::string, 5> sources;
+    std::array<std::string, 5> glsl_fallback;
     std::array<std::vector<u32>, 5> sources_spirv;
     Shader::Backend::Bindings binding;
     Shader::IR::Program* previous_program{};
@@ -555,6 +556,21 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
             break;
         case Settings::RendererBackend::OpenGL_GLASM:
             sources[stage_index] = EmitGLASM(profile, runtime_info, program, binding);
+            // Assembly is emitted from the untouched IR. The GLSL fallback needs the legacy
+            // attribute conversion, which rewrites that IR, so the stage info the next stage
+            // reads is restored afterwards. A rejected GLASM program is the only consumer.
+            {
+                const Shader::Info info_backup = program.info;
+                try {
+                    Shader::Backend::Bindings fallback_binding;
+                    ConvertLegacyToGeneric(program, runtime_info);
+                    glsl_fallback[stage_index] =
+                        EmitGLSL(profile, runtime_info, program, fallback_binding);
+                } catch (const Shader::Exception& exception) {
+                    LOG_WARNING(Render_OpenGL, "GLSL fallback was not built: {}", exception.what());
+                }
+                program.info = info_backup;
+            }
             break;
         case Settings::RendererBackend::OpenGL_SPIRV:
             ConvertLegacyToGeneric(program, runtime_info);
@@ -568,7 +584,8 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     auto* const thread_worker{use_shader_workers ? workers.get() : nullptr};
     return std::make_unique<GraphicsPipeline>(device, texture_cache, buffer_cache, program_manager,
                                               state_tracker, thread_worker, &shader_notify, sources,
-                                              sources_spirv, infos, key, force_context_flush);
+                                              glsl_fallback, sources_spirv, infos, key,
+                                              force_context_flush);
 
 } catch (Shader::Exception& exception) {
     LOG_ERROR(Render_OpenGL, "{}", exception.what());
@@ -611,6 +628,7 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
     info.glasm_use_storage_buffers = num_storage_buffers <= device.GetMaxGLASMStorageBufferBlocks();
 
     std::string code{};
+    std::string glsl_fallback{};
     std::vector<u32> code_spirv;
     switch (::Settings::values.renderer_backend.GetValue()) {
     case Settings::RendererBackend::OpenGL_GLSL:
@@ -618,6 +636,11 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
         break;
     case Settings::RendererBackend::OpenGL_GLASM:
         code = EmitGLASM(profile, info, program);
+        try {
+            glsl_fallback = EmitGLSL(profile, program);
+        } catch (const Shader::Exception& exception) {
+            LOG_WARNING(Render_OpenGL, "GLSL compute fallback was not built: {}", exception.what());
+        }
         break;
     case Settings::RendererBackend::OpenGL_SPIRV:
         code_spirv = EmitSPIRV(profile, program);
@@ -625,7 +648,7 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
     default:
         UNREACHABLE();
     }
-    return std::make_unique<ComputePipeline>(device, texture_cache, buffer_cache, program_manager, program.info, code, code_spirv, force_context_flush);
+    return std::make_unique<ComputePipeline>(device, texture_cache, buffer_cache, program_manager, program.info, code, glsl_fallback, code_spirv, force_context_flush);
 } catch (Shader::Exception& exception) {
     LOG_ERROR(Render_OpenGL, "{}", exception.what());
     return nullptr;

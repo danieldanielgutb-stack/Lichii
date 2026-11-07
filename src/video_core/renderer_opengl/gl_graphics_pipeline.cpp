@@ -10,6 +10,7 @@
 #include <vector>
 #include <bit>
 #include <numeric>
+#include "common/logging.h"
 #include "common/settings.h"
 #include "common/thread_worker.h"
 #include "shader_recompiler/shader_info.h"
@@ -181,6 +182,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device, TextureCache& texture_c
                                    StateTracker& state_tracker_, ShaderWorker* thread_worker,
                                    VideoCore::ShaderNotify* shader_notify,
                                    std::array<std::string, 5> sources,
+                                   std::array<std::string, 5> glsl_fallback,
                                    std::array<std::vector<u32>, 5> sources_spirv,
                                    const std::array<const Shader::Info*, 5>& infos,
                                    const GraphicsPipelineKey& key_, bool force_context_flush)
@@ -238,8 +240,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device, TextureCache& texture_c
         GenerateTransformFeedbackState();
     }
     const bool in_parallel = thread_worker != nullptr;
-    auto func{[this, sources_ = std::move(sources), sources_spirv_ = std::move(sources_spirv),
-               shader_notify, backend, in_parallel,
+    auto func{[this, sources_ = std::move(sources), glsl_fallback_ = std::move(glsl_fallback),
+               sources_spirv_ = std::move(sources_spirv), shader_notify, backend, in_parallel,
                force_context_flush](ShaderContext::Context*) mutable {
         for (size_t stage = 0; stage < 5; ++stage) {
             switch (backend) {
@@ -257,6 +259,30 @@ GraphicsPipeline::GraphicsPipeline(const Device& device, TextureCache& texture_c
                 break;
             default:
                 break;
+            }
+        }
+        if (backend == Settings::RendererBackend::OpenGL_GLASM) {
+            bool assembly_ok = false;
+            for (size_t stage = 0; stage < 5; ++stage) {
+                if ((enabled_stages_mask & (1u << stage)) == 0) {
+                    continue;
+                }
+                assembly_ok = true;
+                if (assembly_programs[stage].handle == 0) {
+                    assembly_ok = false;
+                    break;
+                }
+            }
+            if (!assembly_ok) {
+                LOG_ERROR(Render_OpenGL,
+                          "GLASM pipeline rejected; compiling the GLSL fallback for this program only");
+                for (size_t stage = 0; stage < 5; ++stage) {
+                    assembly_programs[stage].Release();
+                    if (!glsl_fallback_[stage].empty()) {
+                        source_programs[stage] =
+                            CreateProgram(glsl_fallback_[stage], Stage(stage));
+                    }
+                }
             }
         }
         if (force_context_flush || in_parallel) {
@@ -456,7 +482,19 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     if (!IsBuilt()) {
         WaitForBuild();
     }
-    const bool use_assembly{assembly_programs[0].handle != 0};
+    const bool use_assembly = [&] {
+        bool any = false;
+        for (size_t stage = 0; stage < 5; ++stage) {
+            if ((enabled_stages_mask & (1u << stage)) == 0) {
+                continue;
+            }
+            if (assembly_programs[stage].handle == 0) {
+                return false;
+            }
+            any = true;
+        }
+        return any;
+    }();
     if (use_assembly) {
         program_manager.BindAssemblyPrograms(assembly_programs, enabled_stages_mask);
     } else {

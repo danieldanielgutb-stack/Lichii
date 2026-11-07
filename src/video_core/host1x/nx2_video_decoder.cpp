@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <optional>
@@ -99,6 +100,8 @@ struct Nx2VideoDecoder::Impl {
     /// lose theirs and take the earliest one instead.
     std::multiset<u64> pending_pts;
     std::vector<u8> packet; ///< FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the data
+    u32 logged_frames{};
+    u32 logged_renders{};
 
     ~Impl() {
         sws_freeContext(scaler);
@@ -123,6 +126,31 @@ struct Nx2VideoDecoder::Impl {
             }
             pictures.push_back({static_cast<u32>(f->width), static_cast<u32>(f->height), pts,
                                 std::move(frame)});
+            if (logged_frames < 3 && f->data[0] != nullptr && f->width > 0 && f->height > 0) {
+                ++logged_frames;
+                const u8* y = f->data[0];
+                u8 y_min = 255;
+                u8 y_max = 0;
+                const int y_step = std::max(f->linesize[0], 1);
+                for (int row = 0; row < f->height; row += std::max(f->height / 8, 1)) {
+                    for (int col = 0; col < f->width; col += std::max(f->width / 8, 1)) {
+                        const u8 sample = y[row * y_step + col];
+                        y_min = std::min(y_min, sample);
+                        y_max = std::max(y_max, sample);
+                    }
+                }
+                const u8 c0 = f->data[1] != nullptr ? f->data[1][0] : 0;
+                const u8 c1 = f->data[1] != nullptr && f->linesize[1] > 1 ? f->data[1][1]
+                              : f->data[2] != nullptr                      ? f->data[2][0]
+                                                                           : 0;
+                LOG_INFO(HW_GPU,
+                         "nx2 video: decoded frame {} {}x{} fmt {} range {} space {} y[{},{}] "
+                         "chroma {},{}",
+                         logged_frames, f->width, f->height,
+                         av_get_pix_fmt_name(static_cast<AVPixelFormat>(f->format)),
+                         static_cast<int>(f->color_range), static_cast<int>(f->colorspace), y_min,
+                         y_max, c0, c1);
+            }
         }
     }
 };
@@ -139,6 +167,9 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
         LOG_ERROR(HW_GPU, "nx2 video: FFmpeg has no decoder for \"{}\"", mime);
         return;
     }
+    const AVCodec* selected = impl->decoder->GetCodec();
+    LOG_INFO(HW_GPU, "nx2 video: selected FFmpeg decoder \"{}\" ({}) for \"{}\"", selected->name,
+             selected->long_name != nullptr ? selected->long_name : "", mime);
     impl->context.emplace(*impl->decoder);
     if (Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
         impl->hardware.emplace();
@@ -206,6 +237,10 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
                            : pitch * height;
     const u64 min_pitch = format == Nx2PictureFormat::Nv12 ? ((u64{width} + 1) / 2) * 2 : 0;
     if (width == 0 || height == 0 || pitch < min_pitch || out.size() < needed) {
+        LOG_ERROR(HW_GPU,
+                  "nx2 video: render skipped before writing ({}x{} pitch {} chroma {:#x} out {} "
+                  "need {})",
+                  width, height, pitch, chroma_offset, out.size(), needed);
         return;
     }
     const AVPixelFormat target = format == Nx2PictureFormat::Nv12    ? AV_PIX_FMT_NV12

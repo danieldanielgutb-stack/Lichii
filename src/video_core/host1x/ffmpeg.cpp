@@ -189,6 +189,21 @@ Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
     if (!m_codec) {
         m_codec = avcodec_find_decoder(av_codec);
     }
+    // Some bundled FFmpeg builds register AV1 only under its external name. Prefer libdav1d,
+    // then libaom, and leave every other codec on the normal lookup.
+    if (!m_codec && av_codec == AV_CODEC_ID_AV1) {
+        m_codec = avcodec_find_decoder_by_name("libdav1d");
+        if (!m_codec) {
+            m_codec = avcodec_find_decoder_by_name("libaom-av1");
+        }
+        if (m_codec) {
+            LOG_INFO(HW_GPU, "nx2 video: AV_CODEC_ID_AV1 was not registered; using \"{}\"",
+                     m_codec->name);
+        } else {
+            LOG_ERROR(HW_GPU,
+                      "nx2 video: FFmpeg has neither the built-in AV1 decoder, libdav1d, nor libaom-av1");
+        }
+    }
 }
 
 bool Decoder::SupportsDecodingOnDevice(AVPixelFormat* out_pix_fmt, AVHWDeviceType type) const {

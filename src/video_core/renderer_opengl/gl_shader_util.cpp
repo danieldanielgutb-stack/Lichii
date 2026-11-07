@@ -73,8 +73,10 @@ OGLProgram CreateProgram(std::string_view code, GLenum stage) {
     const GLchar* const code_ptr = code.data();
     glShaderSource(shader.handle, 1, &code_ptr, &length);
     glCompileShader(shader.handle);
-    if (Settings::values.renderer_debug) {
-        LogShader(shader.handle, code);
+    GLint shader_status = GL_TRUE;
+    glGetShaderiv(shader.handle, GL_COMPILE_STATUS, &shader_status);
+    if (shader_status == GL_FALSE || Settings::values.renderer_debug) {
+        LogShader(shader.handle, shader_status == GL_FALSE ? code : std::string_view{});
     }
     return LinkSeparableProgram(shader.handle);
 }
@@ -97,16 +99,23 @@ OGLAssemblyProgram CompileProgram(std::string_view code, GLenum target) {
     glGenProgramsARB(1, &program.handle);
     glNamedProgramStringEXT(program.handle, target, GL_PROGRAM_FORMAT_ASCII_ARB,
                             static_cast<GLsizei>(code.size()), code.data());
-    if (Settings::values.renderer_debug) {
-        const auto err = reinterpret_cast<const char*>(glGetString(GL_PROGRAM_ERROR_STRING_NV));
-        if (err && *err) {
-            if (std::strstr(err, "error")) {
-                LOG_CRITICAL(Render_OpenGL, "\n{}", err);
-                LOG_INFO(Render_OpenGL, "\n{}", code);
-            } else {
-                LOG_WARNING(Render_OpenGL, "\n{}", err);
-            }
+    GLint error_position = -1;
+    glGetIntegerv(GL_PROGRAM_ERROR_POSITION_NV, &error_position);
+    const auto err = reinterpret_cast<const char*>(glGetString(GL_PROGRAM_ERROR_STRING_NV));
+    // glGenProgramsARB hands out a name even when the source is rejected. Binding that name
+    // draws nothing for the stage, which leaves a cleared framebuffer (black) under any pass
+    // whose program did assemble, such as subtitles on top of a rejected movie shader.
+    if (error_position != -1) {
+        LOG_ERROR(Render_OpenGL, "GLASM program rejected at position {}: {}", error_position,
+                  err && *err ? err : "(no driver string)");
+        if (Settings::values.renderer_debug && !code.empty()) {
+            LOG_INFO(Render_OpenGL, "\n{}", code);
         }
+        program.Release();
+        return program;
+    }
+    if (Settings::values.renderer_debug && err && *err) {
+        LOG_WARNING(Render_OpenGL, "\n{}", err);
     }
     return program;
 }

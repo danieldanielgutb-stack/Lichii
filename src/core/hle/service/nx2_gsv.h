@@ -3173,8 +3173,27 @@ private:
                               layout.pitch * ((height + 1) / 2));
         }
         // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
-        if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+        const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
+        if (device) {
             system.GPU().InvalidateRegion(*device, layout.size);
+        } else if (m_frames_out < 4) {
+            LOG_ERROR(Service,
+                      "nx2 video: decoded image {} at {:#x} has no device mapping; the GPU texture "
+                      "cache was not invalidated ({}x{} pitch {})",
+                      image_id, address, width, height, layout.pitch);
+        }
+        if (m_frames_out < 2) {
+            const u64 luma_bytes = layout.pitch * height;
+            u32 nonzero = 0;
+            const u64 samples = (std::min)(luma_bytes, static_cast<u64>(bytes.size()));
+            for (u64 i = 0; i < samples; i += (std::max)(samples / 4096, u64{1})) {
+                nonzero += bytes[i] != 0;
+            }
+            LOG_INFO(Service,
+                     "nx2 video: wrote image {} {}x{} fmt {} pitch {} chroma {:#x} sampled_nonzero "
+                     "{} device {}",
+                     image_id, width, height, static_cast<u32>(layout.format), layout.pitch,
+                     layout.chroma_offset, nonzero, device ? *device : 0);
         }
         trace_write();
         return {width, height};

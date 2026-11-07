@@ -8,6 +8,7 @@
 #include <bit>
 #include <numeric>
 #include "common/cityhash.h"
+#include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/renderer_opengl/gl_compute_pipeline.h"
 #include "video_core/renderer_opengl/gl_shader_manager.h"
@@ -35,7 +36,8 @@ bool ComputePipelineKey::operator==(const ComputePipelineKey& rhs) const noexcep
 ComputePipeline::ComputePipeline(const Device& device, TextureCache& texture_cache_,
                                  BufferCache& buffer_cache_, ProgramManager& program_manager_,
                                  const Shader::Info& info_, std::string code,
-                                 std::vector<u32> code_v, bool force_context_flush)
+                                 std::string glsl_fallback, std::vector<u32> code_v,
+                                 bool force_context_flush)
     : texture_cache{texture_cache_}, buffer_cache{buffer_cache_},
       program_manager{program_manager_}, info{info_} {
     switch (::Settings::values.renderer_backend.GetValue()) {
@@ -44,6 +46,11 @@ ComputePipeline::ComputePipeline(const Device& device, TextureCache& texture_cac
         break;
     case Settings::RendererBackend::OpenGL_GLASM:
         assembly_program = CompileProgram(code, GL_COMPUTE_PROGRAM_NV);
+        if (assembly_program.handle == 0 && !glsl_fallback.empty()) {
+            LOG_ERROR(Render_OpenGL,
+                      "GLASM compute program rejected; compiling the GLSL fallback for this program only");
+            source_program = CreateProgram(glsl_fallback, GL_COMPUTE_SHADER);
+        }
         break;
     case Settings::RendererBackend::OpenGL_SPIRV:
         source_program = CreateProgram(code_v, GL_COMPUTE_SHADER);
