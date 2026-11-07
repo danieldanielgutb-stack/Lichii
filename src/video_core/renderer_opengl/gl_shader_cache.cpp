@@ -533,6 +533,12 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     std::array<std::string, 5> glsl_fallback;
     std::array<std::vector<u32>, 5> sources_spirv;
     Shader::Backend::Bindings binding;
+    // Separate from `binding`: GLASM and the GLSL fallback must not share one counter, or the
+    // fallback's texture and uniform units continue past the assembly program's.
+    Shader::Backend::Bindings glsl_binding;
+    // Post-conversion infos, so a later stage's fallback reads the generics this stage wrote.
+    std::array<Shader::Info, 5> glsl_stage_infos{};
+    const Shader::Info* previous_glsl_info{};
     Shader::IR::Program* previous_program{};
     const bool use_glasm = device.UseAssemblyShaders();
     const size_t first_index = uses_vertex_a && uses_vertex_b ? 1 : 0;
@@ -556,16 +562,25 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
             break;
         case Settings::RendererBackend::OpenGL_GLASM:
             sources[stage_index] = EmitGLASM(profile, runtime_info, program, binding);
-            // Assembly is emitted from the untouched IR. The GLSL fallback needs the legacy
-            // attribute conversion, which rewrites that IR, so the stage info the next stage
-            // reads is restored afterwards. A rejected GLASM program is the only consumer.
+            // Assembly keeps legacy attributes. GLSL cannot, so the fallback is emitted the
+            // same way as the GLSL backend: one binding range for the whole pipeline, and this
+            // stage's inputs follow the previous stage's converted outputs. The program info is
+            // put back afterwards; the next assembly stage must not see the GLSL mapping.
             {
                 const Shader::Info info_backup = program.info;
                 try {
-                    Shader::Backend::Bindings fallback_binding;
-                    ConvertLegacyToGeneric(program, runtime_info);
+                    Shader::RuntimeInfo glsl_runtime =
+                        MakeRuntimeInfo(key, program, nullptr, false, false);
+                    if (previous_glsl_info != nullptr) {
+                        glsl_runtime.previous_stage_stores = previous_glsl_info->stores;
+                        glsl_runtime.previous_stage_legacy_stores_mapping =
+                            previous_glsl_info->legacy_stores_mapping;
+                    }
+                    ConvertLegacyToGeneric(program, glsl_runtime);
                     glsl_fallback[stage_index] =
-                        EmitGLSL(profile, runtime_info, program, fallback_binding);
+                        EmitGLSL(profile, glsl_runtime, program, glsl_binding);
+                    glsl_stage_infos[stage_index] = program.info;
+                    previous_glsl_info = &glsl_stage_infos[stage_index];
                 } catch (const Shader::Exception& exception) {
                     LOG_WARNING(Render_OpenGL, "GLSL fallback was not built: {}", exception.what());
                 }

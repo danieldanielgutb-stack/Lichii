@@ -89,9 +89,17 @@ public:
     }
 
     void ConfigureTransformFeedback() const {
-        if (num_xfb_attribs != 0) {
-            ConfigureTransformFeedbackImpl();
+        if (num_xfb_attribs == 0) {
+            return;
         }
+        // A rejected GLASM pipeline is running its GLSL fallback. That shader already declares
+        // the transform-feedback varyings; the NV attrib list would point at assembly resources.
+        for (const auto& program : source_programs) {
+            if (program.handle != 0) {
+                return;
+            }
+        }
+        ConfigureTransformFeedbackImpl();
     }
 
     [[nodiscard]] const GraphicsPipelineKey& Key() const noexcept {

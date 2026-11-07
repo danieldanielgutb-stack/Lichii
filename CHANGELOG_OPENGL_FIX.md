@@ -35,8 +35,16 @@ was sampled.
    pipelines, such as subtitles, still assemble. Rejected programs are now
    deleted. That pipeline is compiled again as GLSL. GLSL and Vulkan are
    unchanged. GLASM is still used when the driver accepts it.
-2. The stage info consumed by the next GLASM stage is restored after the
-   fallback translation, so a program the driver accepts is not retargeted.
+2. The GLSL fallback is emitted like the GLSL backend, not like a second
+   GLASM pass. Binding numbers accumulate across the pipeline instead of
+   restarting at 0 in every stage, and each stage's legacy attributes
+   (texture coordinates included) are rewritten onto the generics the
+   previous stage actually wrote. The first attempt restored the assembly
+   info but gave every stage its own binding range and an empty legacy
+   mapping, so a rejected movie shader still sampled nothing. The assembly
+   stage info the next GLASM stage reads is still restored. Transform
+   feedback varyings stay in the GLSL shader; the NV attrib list is not
+   applied on top of that fallback.
 3. If `avcodec_find_decoder(AV_CODEC_ID_AV1)` returns null, the decoder tries
    `libdav1d` and then `libaom-av1` by name.
 4. The first decoded frames log format, range, and a luma/chroma sample. A
