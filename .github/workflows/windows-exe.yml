@@ -1,0 +1,92 @@
+name: windows-exe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows MSVC
+    runs-on: windows-2022
+    steps:
+      - name: Check out the OpenGL fix
+        uses: actions/checkout@v5
+        with:
+          ref: fix/zelda-oot-opengl-black-screen
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install sccache
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
+          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
+          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DLICHII_BUILD_TAG=opengl-oot-fix
+          -DLICHII_BUILD_PLATFORM=windows-x86_64
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          foreach ($exe in 'lichii.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/release/bin/$exe")) {
+              throw "build/release/bin/$exe was not produced"
+            }
+          }
+          windeployqt --release --no-translations build/release/bin/lichii.exe
+          if (Test-Path dist-zip) { Remove-Item -Recurse -Force dist-zip }
+          New-Item -ItemType Directory dist-zip | Out-Null
+          Copy-Item -Recurse build/release/bin/* dist-zip/
+          Compress-Archive -Path dist-zip/* -DestinationPath lichii-windows-opengl-oot.zip
+
+      - name: Publish the zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: opengl-oot-fix
+          name: OpenGL Ocarina fix (Windows)
+          prerelease: true
+          files: lichii-windows-opengl-oot.zip
+          fail_on_unmatched_files: true
+          body: |
+            Windows build of branch fix/zelda-oot-opengl-black-screen.
+            Extract the zip and run lichii.exe. This is not a tested gameplay result.
