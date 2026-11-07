@@ -1750,16 +1750,21 @@ void Device::RemoveUnsuitableExtensions() {
                             features.vulkan_memory_model.vulkanMemoryModelDeviceScope &&
                             extensions.subgroup_size_control &&
                             features.subgroup_size_control.computeFullSubgroups;
+        // The guest warp is 32 lanes. Prefer its own 16x8x16 shape (NVIDIA tensor cores, including
+        // the RTX A500). Do not require the driver's default subgroup size to already be fixed at
+        // 32: pipeline creation forces requiredSubgroupSize to 32 for these shaders, and the
+        // startup self-test rejects a device whose element layout does not match. A driver that
+        // only advertises a range (min != max) used to fall back to the software expansion, which
+        // is what holds Ocarina of Time around 8 fps. Without this shape, 16x16x16 is the
+        // alternative and also forces 32-lane compute subgroups.
         cooperative_hmma_16x8x16 =
-            usable && has_shape(8) &&
-            (properties.subgroup_properties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-            properties.subgroup_properties.subgroupSize == GuestWarpSize &&
-            // Compute subgroups may vary between these sizes (always with SPIR-V 1.6), and the
-            // per-lane matrix layout needs exactly the guest's 32 lanes.
-            properties.subgroup_size_control.minSubgroupSize == GuestWarpSize &&
-            properties.subgroup_size_control.maxSubgroupSize == GuestWarpSize;
+            usable && has_shape(8) && IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
         cooperative_hmma_16x16x16 =
             usable && has_shape(16) && IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
+        if (cooperative_hmma_16x8x16) {
+            LOG_INFO(Render_Vulkan,
+                     "Guest tensor operations can use 16x8x16 cooperative matrices");
+        }
         extensions.cooperative_matrix = cooperative_hmma_16x8x16 || cooperative_hmma_16x16x16;
         features.cooperative_matrix.cooperativeMatrixRobustBufferAccess = VK_FALSE;
         RemoveExtensionFeatureIfUnsuitable(extensions.cooperative_matrix,
