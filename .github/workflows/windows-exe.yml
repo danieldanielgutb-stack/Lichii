@@ -13,31 +13,26 @@ permissions:
 
 jobs:
   windows:
-    name: Windows MSVC - upstream build-130 + PR 1218
+    name: Windows MSVC - post-build-130 + PR 1218
     runs-on: windows-2022
     timeout-minutes: 180
     steps:
       - name: Check out experiment metadata
         uses: actions/checkout@v4
 
-      - name: Pin source to upstream build-130 and cherry-pick deadlock fix
+      - name: Pin source to tested upstream PR 1218 source snapshot
         shell: bash
         run: |
           set -euo pipefail
           git remote add lichii-upstream https://github.com/zortos293/Lichii.git
-          git fetch --no-tags --depth=1 lichii-upstream refs/tags/build-130
+          # The PR depends on 26 upstream commits after build-130; cherry-picking
+          # onto build-130 conflicts in nx2_stub_device.h. Use the whole pinned
+          # source snapshot, never an auto-resolved or partial cherry-pick.
+          git fetch --no-tags --depth=1 lichii-upstream pull/1218/head
+          test "$(git rev-parse FETCH_HEAD)" = "396760eea92e98c48f127342b316c8ed26928f3b"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "3dae119aeac255a9334386cdf10ca707ef96867d"
-          git fetch --no-tags --depth=20 lichii-upstream pull/1218/head
-          git config user.name "Lichii 130.1 Experimental CI"
-          git config user.email "ci@users.noreply.github.com"
-          # Exact reviewed PR #1218 commits, pinned. Any conflict FAILS this build.
-          git cherry-pick 8e0aa220c4275163269386f31ae91d20b669f694
-          git cherry-pick cea0b03a5354f68622c3c80eb0f675005826bd3d
-          git cherry-pick a1d36c69a958c70a353c0b9c3141d4cead160610
-          git cherry-pick 396760eea92e98c48f127342b316c8ed26928f3b
-          git log -5 --oneline
-          git diff 3dae119aeac255a9334386cdf10ca707ef96867d --stat
+          git log -1 --format="%H %s"
+          echo "Source: upstream PR #1218 head 396760ee, post-build-130 experimental" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -86,8 +81,8 @@ jobs:
           Copy-Item -Recurse build/release/bin/* package/
           @'
           LICHII BUILD 130.1 - EXPERIMENTAL, NOT A VERIFIED FIX
-          Source: official upstream tag build-130 (3dae119aeac255a9334386cdf10ca707ef96867d)
-          Proposed patch: https://github.com/zortos293/Lichii/pull/1218
+          Source: post-build-130 PR #1218 head (396760eea92e98c48f127342b316c8ed26928f3b)
+          Experimental code including proposed PR: https://github.com/zortos293/Lichii/pull/1218
           Bug investigated: Zelda Ocarina of Time loads a save, then hangs at Game: 0 FPS.
           The patch fixes a GPU memory registry lock-order deadlock in a related OoT scenario.
           NO save-loading gameplay validation has been performed on the user's RTX A500 laptop.
