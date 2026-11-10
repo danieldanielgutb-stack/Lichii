@@ -1,25 +1,48 @@
 name: windows-exe
 
 on:
+  push:
+    branches:
+      - experiment/lichii-build-130-1-save-freeze
+    paths:
+      - .github/workflows/windows-exe.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
-    name: Windows MSVC
+    name: Windows MSVC - upstream build-130 + PR 1218
     runs-on: windows-2022
+    timeout-minutes: 180
     steps:
-      - name: Check out the OpenGL fix
-        uses: actions/checkout@v5
-        with:
-          ref: fix/zelda-oot-opengl-black-screen
+      - name: Check out experiment metadata
+        uses: actions/checkout@v4
+
+      - name: Pin source to upstream build-130 and cherry-pick deadlock fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add lichii-upstream https://github.com/zortos293/Lichii.git
+          git fetch --no-tags --depth=1 lichii-upstream refs/tags/build-130
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "3dae119aeac255a9334386cdf10ca707ef96867d"
+          git fetch --no-tags --depth=20 lichii-upstream pull/1218/head
+          git config user.name "Lichii 130.1 Experimental CI"
+          git config user.email "ci@users.noreply.github.com"
+          # Exact reviewed PR #1218 commits, pinned. Any conflict FAILS this build.
+          git cherry-pick 8e0aa220c4275163269386f31ae91d20b669f694
+          git cherry-pick cea0b03a5354f68622c3c80eb0f675005826bd3d
+          git cherry-pick a1d36c69a958c70a353c0b9c3141d4cead160610
+          git cherry-pick 396760eea92e98c48f127342b316c8ed26928f3b
+          git log -5 --oneline
+          git diff 3dae119aeac255a9334386cdf10ca707ef96867d --stat
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install Qt
+      - name: Install Qt 6.8.3
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.8.3"
@@ -28,15 +51,6 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtcharts
           cache: true
-
-      - name: Install sccache
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
-          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
-          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
-          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
-          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -55,38 +69,37 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=OFF
-          -DLICHII_BUILD_TAG=opengl-oot-fix
+          -DLICHII_BUILD_TAG=130.1-experimental
           -DLICHII_BUILD_PLATFORM=windows-x86_64
           -DUSE_DISCORD_PRESENCE=OFF
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
         shell: bash
-        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
 
-      - name: Package
+      - name: Package as untested ZIP
         shell: pwsh
         run: |
-          foreach ($exe in 'lichii.exe', 'eden-cli.exe') {
-            if (-not (Test-Path "build/release/bin/$exe")) {
-              throw "build/release/bin/$exe was not produced"
-            }
-          }
+          if (-not (Test-Path 'build/release/bin/lichii.exe')) { throw 'lichii.exe not produced' }
           windeployqt --release --no-translations build/release/bin/lichii.exe
-          if (Test-Path dist-zip) { Remove-Item -Recurse -Force dist-zip }
-          New-Item -ItemType Directory dist-zip | Out-Null
-          Copy-Item -Recurse build/release/bin/* dist-zip/
-          Compress-Archive -Path dist-zip/* -DestinationPath lichii-windows-opengl-oot.zip
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item -Recurse build/release/bin/* package/
+          @'
+          LICHII BUILD 130.1 - EXPERIMENTAL, NOT A VERIFIED FIX
+          Source: official upstream tag build-130 (3dae119aeac255a9334386cdf10ca707ef96867d)
+          Proposed patch: https://github.com/zortos293/Lichii/pull/1218
+          Bug investigated: Zelda Ocarina of Time loads a save, then hangs at Game: 0 FPS.
+          The patch fixes a GPU memory registry lock-order deadlock in a related OoT scenario.
+          NO save-loading gameplay validation has been performed on the user's RTX A500 laptop.
+          BACK UP saves before testing. DO NOT overwrite your existing Lichii installation.
+          Upstream updates do not automatically include this experimental patch.
+          '@ | Set-Content -Path package/EXPERIMENTAL-READ-ME.txt
+          Compress-Archive -Path package/* -DestinationPath Lichii-130.1-experimental-windows.zip
 
-      - name: Publish the zip
-        uses: softprops/action-gh-release@v2
+      - name: Upload experimental artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: opengl-oot-fix
-          name: OpenGL Ocarina fix (Windows)
-          prerelease: true
-          files: lichii-windows-opengl-oot.zip
-          fail_on_unmatched_files: true
-          body: |
-            Windows build of branch fix/zelda-oot-opengl-black-screen.
-            Extract the zip and run lichii.exe. This is not a tested gameplay result.
+          name: Lichii-130.1-experimental-windows
+          path: Lichii-130.1-experimental-windows.zip
+          if-no-files-found: error
+          retention-days: 14
