@@ -51,6 +51,24 @@ jobs:
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
 
+      - name: Fix upstream MSVC shadow warning in recommended_settings.cpp (CI only)
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/common/recommended_settings.cpp")
+          s = p.read_text(encoding="utf-8")
+          assert s.count("Values& values") == 2, "upstream signature changed"
+          assert s.count("ForEachRecommendedSetting(values,") == 2, "upstream call count changed"
+          s = s.replace("Values& values", "Values& settings_values")
+          s = s.replace("ForEachRecommendedSetting(values,", "ForEachRecommendedSetting(settings_values,")
+          s = s.replace("values.recommended_settings_backup", "settings_values.recommended_settings_backup")
+          assert "Values& values" not in s
+          p.write_text(s, encoding="utf-8")
+          PY
+          git diff --check
+          git diff -- src/common/recommended_settings.cpp
+
       - name: Configure
         shell: bash
         run: >-
