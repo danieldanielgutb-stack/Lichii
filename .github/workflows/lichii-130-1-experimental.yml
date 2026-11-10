@@ -1,0 +1,105 @@
+name: Lichii 130.1 Experimental - Zelda save-load deadlock
+
+on:
+  push:
+    branches:
+      - experiment/lichii-build-130-1-save-freeze
+    paths:
+      - .github/workflows/lichii-130-1-experimental.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows MSVC - upstream build-130 + PR 1218
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - name: Check out experiment metadata
+        uses: actions/checkout@v4
+
+      - name: Pin source to upstream build-130 and cherry-pick deadlock fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add lichii-upstream https://github.com/zortos293/Lichii.git
+          git fetch --no-tags --depth=1 lichii-upstream refs/tags/build-130
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "3dae119aeac255a9334386cdf10ca707ef96867d"
+          git fetch --no-tags --depth=20 lichii-upstream pull/1218/head
+          git config user.name "Lichii 130.1 Experimental CI"
+          git config user.email "ci@users.noreply.github.com"
+          # Exact reviewed PR #1218 commits, pinned. Any conflict FAILS this build.
+          git cherry-pick 8e0aa220c4275163269386f31ae91d20b669f694
+          git cherry-pick cea0b03a5354f68622c3c80eb0f675005826bd3d
+          git cherry-pick a1d36c69a958c70a353c0b9c3141d4cead160610
+          git cherry-pick 396760eea92e98c48f127342b316c8ed26928f3b
+          git log -5 --oneline
+          git diff 3dae119aeac255a9334386cdf10ca707ef96867d --stat
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DLICHII_BUILD_TAG=130.1-experimental
+          -DLICHII_BUILD_PLATFORM=windows-x86_64
+          -DUSE_DISCORD_PRESENCE=OFF
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+
+      - name: Package as untested ZIP
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'build/release/bin/lichii.exe')) { throw 'lichii.exe not produced' }
+          windeployqt --release --no-translations build/release/bin/lichii.exe
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item -Recurse build/release/bin/* package/
+          @'
+          LICHII BUILD 130.1 - EXPERIMENTAL, NOT A VERIFIED FIX
+          Source: official upstream tag build-130 (3dae119aeac255a9334386cdf10ca707ef96867d)
+          Proposed patch: https://github.com/zortos293/Lichii/pull/1218
+          Bug investigated: Zelda Ocarina of Time loads a save, then hangs at Game: 0 FPS.
+          The patch fixes a GPU memory registry lock-order deadlock in a related OoT scenario.
+          NO save-loading gameplay validation has been performed on the user's RTX A500 laptop.
+          BACK UP saves before testing. DO NOT overwrite your existing Lichii installation.
+          Upstream updates do not automatically include this experimental patch.
+          '@ | Set-Content -Path package/EXPERIMENTAL-READ-ME.txt
+          Compress-Archive -Path package/* -DestinationPath Lichii-130.1-experimental-windows.zip
+
+      - name: Upload experimental artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lichii-130.1-experimental-windows
+          path: Lichii-130.1-experimental-windows.zip
+          if-no-files-found: error
+          retention-days: 14
